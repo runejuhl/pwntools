@@ -1,4 +1,19 @@
-import pwn, subprocess, os, time, socket, re
+import pwn, os
+
+def which(name, flags = os.X_OK, find_all = False):
+    out = []
+    try:
+        path = os.environ['PATH']
+    except KeyError:
+        pwn.die('No PATH environment variable')
+    for p in path.split(os.pathsep):
+        p = os.path.join(p, name)
+        if os.access(p, flags):
+            out.append(p)
+    if find_all:
+        return out
+    else:
+        return out[0] if out else None
 
 def pidof(prog):
     '''Get PID, depending on type:
@@ -8,8 +23,10 @@ def pidof(prog):
               is not running locally)'''
     if   isinstance(prog, pwn.remote):
         def toaddr((host, port)):
+            import socket
             return '%08X:%04X' % (pwn.u32(socket.inet_aton(host)), port)
         def getpid(loc, rem):
+            import re
             loc = toaddr(loc)
             rem = toaddr(rem)
             inode = 0
@@ -101,5 +118,6 @@ def proc_starttime(pid):
     return int(proc_stat(pid)[21])
 
 def wait_for_debugger(pid):
+    import time
     while proc_tracer(pid) is None:
         time.sleep(0.01)

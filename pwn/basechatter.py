@@ -1,6 +1,4 @@
-import pwn, socket, time, sys, re, errno
-from pwn import log, text, Thread
-from select import select
+import pwn
 
 class basechatter:
     def connected(self):
@@ -24,12 +22,13 @@ class basechatter:
         pwn.bug('This should be implemented in the sub-class')
 
     def can_recv(self, timeout = 0):
-        return select([self], [], [], timeout) == ([self], [], [])
+        import select
+        return select.select([self], [], [], timeout) == ([self], [], [])
 
-    def __init__(self, timeout = 'default', fatal_exceptions = True):
+    def __init__(self, timeout = 'default', silent = False):
         self.debug = pwn.DEBUG
+        self.silent = silent
         self.settimeout(timeout)
-        self.fatal_exceptions = fatal_exceptions
 
     def settimeout(self, n):
         if n == 'default':
@@ -47,11 +46,13 @@ class basechatter:
         self.send(line + '\n')
 
     def recv(self, numb = 4096):
+        import socket, sys
         try:
             res = self._recv(numb)
         except socket.timeout:
             return ''
         except IOError as e:
+            import errno
             if e.errno == errno.EAGAIN:
                 return ''
             raise
@@ -73,6 +74,7 @@ class basechatter:
 
     def recvuntil(self, delim = None, **kwargs):
         if 'regex' in kwargs:
+            import re
             expr = re.compile(kwargs['regex'], re.DOTALL)
             pred = lambda s: expr.match(s)
         elif 'pred' in kwargs:
@@ -99,10 +101,24 @@ class basechatter:
         self.send(dat)
         return res
 
+    def sendlineafter(self, delim, *dat):
+        ''' Like sendafter, but appends a newline'''
+        dat = pwn.flat(dat)
+        res = self.recvuntil(delim)
+        self.send(dat + '\n')
+        return res
+
     def sendthen(self, delim, *dat):
         """ Send *dat, then wait for delim"""
         dat = pwn.flat(dat)
         self.send(dat)
+        res = self.recvuntil(delim)
+        return res
+
+    def sendlinethen(self, delim, *dat):
+        ''' Like sendthen, but appends a newline'''
+        dat = pwn.flat(dat)
+        self.send(dat + '\n')
         res = self.recvuntil(delim)
         return res
 
@@ -112,12 +128,10 @@ class basechatter:
             res.append(self.recvuntil('\n'))
         return ''.join(res)
 
-    def interactive(self, prompt = text.boldred('$') + ' ', clean_sock = True,
-                    flush_timeout = None):
-        if clean_sock:
-            self.clean_sock()
-        log.info('Switching to interactive mode')
-        import readline
+    def interactive(self, prompt = pwn.text.boldred('$') + ' ', flush_timeout = None):
+        if not self.silent:
+            pwn.log.info('Switching to interactive mode')
+        import readline, sys
         debug = self.debug
         timeout = self.timeout
         self.debug = False
@@ -136,6 +150,7 @@ class basechatter:
 
         running = [True] # the old by-ref trick
         def loop():
+            import time
             buf = ''
             buft = time.time()
             newline = True
@@ -191,7 +206,7 @@ class basechatter:
                     newline = True
 
         save()
-        t = Thread(target = loop)
+        t = pwn.Thread(target = loop)
         t.daemon = True
         t.start()
         try:
@@ -215,7 +230,8 @@ class basechatter:
         self.settimeout(timeout)
 
     def recvall(self):
-        log.waitfor('Recieving all data')
+        if not self.silent:
+            pwn.log.waitfor('Recieving all data')
         r = []
         l = 0
         while True:
@@ -223,11 +239,13 @@ class basechatter:
             if s == '': break
             r.append(s)
             l += len(s)
-            log.status(pwn.size(l))
-        self.close()
+            if not self.silent:
+                pwn.log.status(pwn.size(l))
+        if not self.silent:
+            pwn.log.succeeded()
         return ''.join(r)
 
-    def clean_sock(self):
+    def clean(self):
         tmp_timeout = self.timeout
         self.settimeout(0.1)
 

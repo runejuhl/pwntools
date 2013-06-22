@@ -1,6 +1,7 @@
-import pwn, os, subprocess, tempfile, time
+import pwn
 
 def attach_gdb_to_pid(pid, execute = None, execute_file = None):
+    import os, tempfile
     if execute is not None and execute_file is not None:
         pwn.die('Both execute and execute_file can\'t be set')
     try:
@@ -9,15 +10,12 @@ def attach_gdb_to_pid(pid, execute = None, execute_file = None):
         pwn.die(e.strerror + ': ' + e.filename)
     if pwn.proc_tracer(pid) is not None:
         pwn.die('Program (pid: %d) is already being debugged' % pid)
-    try:
-        term = subprocess.check_output(['/usr/bin/which', 'x-terminal-emulator']).strip()
-    except subprocess.CalledProcessError:
-        term = ''
-    if term == '':
+    term = pwn.which('x-terminal-emulator')
+    if term is None:
         term = os.getenv('COLORTERM') or os.getenv('TERM')
         if term is None:
             pwn.die('No environment variable named (COLOR)TERM')
-        term = subprocess.check_output(['/usr/bin/which', term]).strip()
+        term = pwn.which(term)
     termpid = os.fork()
     if termpid == 0:
         argv = [term, '-e', 'gdb "%s" %d' % (prog, pid)]
@@ -37,7 +35,7 @@ def attach_gdb_to_pid(pid, execute = None, execute_file = None):
 
 def attach_gdb(prog, execute = None, execute_file = None):
     pids = pwn.pidof(prog)
-    if isinstance(prog, pwn.remote):
+    if isinstance(prog, pwn.remote) or isinstance(prog, pwn.process):
         pid = pids[0]
         if pid is None:
             pwn.die('Could not find remote process (%s:%d) on this machine' % prog.sock.getpeername())
@@ -48,3 +46,4 @@ def attach_gdb(prog, execute = None, execute_file = None):
         if len(pids) > 1:
             pwn.log.info('Attaching to youngest process (PID: %d) of %d' % (pid, len(pids)))
     attach_gdb_to_pid(pid, execute = execute, execute_file = execute_file)
+    return pid

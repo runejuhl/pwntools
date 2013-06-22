@@ -1,6 +1,3 @@
-import struct, sys, subprocess, re, pwn, time
-from pwn import log, text
-
 # align
 def align_up(alignment, x):
     """Rounds x up to nearest multiple of the alignment."""
@@ -19,31 +16,17 @@ def align(alignment, x):
 # network utils
 def ip (host):
     """Resolve host and return IP as four byte string"""
-    return struct.unpack('I', pwn.inet_aton(pwn.gethostbyname(host)))[0]
+    import socket, struct
+    return struct.unpack('I', socket.inet_aton(socket.gethostbyname(host)))[0]
 
 def get_interfaces():
     """Gets all (interface, IPv4) of the local system."""
+    import subprocess, re
     d = subprocess.check_output('ip -4 -o addr', shell=True)
     ifs = re.findall(r'^\S+:\s+(\S+)\s+inet\s+([^\s/]+)', d, re.MULTILINE)
     return [i for i in ifs if i[0] != 'lo']
 
 # Stuff
-def pause(n = None):
-    """Waits for either user input or a specific number of seconds."""
-    try:
-        if n is None:
-            log.info('Paused (press enter to continue)')
-            raw_input('')
-        else:
-            log.waitfor('Continueing in')
-            for i in range(n, 0, -1):
-                log.status('%d... ' % i)
-                pwn.sleep(1)
-            log.succeeded('Now')
-    except KeyboardInterrupt:
-        log.warning('Interrupted')
-        sys.exit(1)
-
 def size(n, abbriv = 'B', si = False):
     """Convert number to human readable form"""
     base = 1000.0 if si else 1024.0
@@ -62,12 +45,6 @@ def size(n, abbriv = 'B', si = False):
 
     return '%.2fP%s' % (n, abbriv)
 
-def prompt(s, default = ''):
-    """Prompts the user for input"""
-    r = raw_input(' ' + text.bold('[?]') + ' ' + s)
-    if r: return r
-    return default
-
 def read(path):
     with open(path) as f:
         return f.read()
@@ -77,6 +54,7 @@ def write(path, data):
         f.write(data)
 
 def bash(cmd, timeout = None, return_stderr = False):
+    import subprocess, time
     p = subprocess.Popen(['/bin/bash', '-c', cmd],
                          stdin  = subprocess.PIPE,
                          stdout = subprocess.PIPE,

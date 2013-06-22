@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 
-import sys, time, random, pwn
+import sys, pwn
 from pwn.internal.excepthook import addexcepthook
 import pwn.text as text
-import threading
 
 def _trace(s):
     if pwn.TRACE:
@@ -16,6 +15,7 @@ def _debug(s):
         sys.stderr.flush()
 
 if sys.stderr.isatty() and not pwn.DEBUG:
+    import threading
     _spinner = None
     _message = ''
     _status = ''
@@ -23,11 +23,14 @@ if sys.stderr.isatty() and not pwn.DEBUG:
 
     class _Spinner(threading.Thread):
         def __init__(self):
+            import random
             threading.Thread.__init__(self)
             self.running = True
             self.i = 0
             self.numlines = 0
             self.spinner = random.choice([
+                    ['/.......','./......','../.....','.../....','..../...','...../..','....../.',
+                     '.......\\','......\\.','.....\\..','....\\...','...\\....','..\\.....','.\\......'],
                     ['|', '/', '-', '\\'],
                     ['q', 'p', 'b', 'd'],
                     ['.', 'o', 'O', '0', '*', ' ', ' ', ' '],
@@ -76,8 +79,11 @@ if sys.stderr.isatty() and not pwn.DEBUG:
             if not status:
                 _trace(' ' + marker + '\x1b[%dE\n' % self.numlines)
             elif '\n' not in status:
-                _trace('\x1b[K ' + marker + ' ' + _message + ': ' + status + \
-                       '\x1b[%dE\n' % self.numlines)
+                s = '\x1b[K ' + marker + ' ' + _message + ': ' + status
+                if self.numlines > 1:
+                    s += '\x1b[%dE' % (self.numlines - 1)
+                s += '\n'
+                _trace(s)
             else:
                 _trace(self.format(marker, status) + '\n')
             _trace('\x1b[?25h')
@@ -91,7 +97,7 @@ if sys.stderr.isatty() and not pwn.DEBUG:
                 else:
                     break
                 self.i = (self.i + 1) % len(self.spinner)
-                time.sleep(0.1)
+                pwn.sleep(0.1)
 
     def _stop_spinner(marker = text.boldblue('[*]'), status = ''):
         global _spinner, _status
@@ -129,9 +135,10 @@ if sys.stderr.isatty() and not pwn.DEBUG:
         _debug(s)
 
     def waitfor(s):
-        global _message
+        global _message, _status
         if _spinner is not None:
             raise Exception('waitfor has already been called')
+        _status = ''
         _message = s
         _start_spinner()
 

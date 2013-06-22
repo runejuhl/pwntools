@@ -1,21 +1,16 @@
-import sys, random
-from pwn import die, ELF, u8, p32, p64, pint, findall, group, tuplify
-from collections import defaultdict
-
-global _currently_loaded
-_currently_loaded = None
+import pwn
 
 class ROP:
-    def __init__(self, file, garbage = 0xdeadbeef):
-        global _currently_loaded
-        if isinstance(file, ELF):
-            self.elf = file
+    def __init__(self, path, garbage = 0xdeadbeef):
+        if isinstance(path, pwn.ELF):
+            self.elf = path
         else:
-            self.elf = ELF(file)
+            self.elf = pwn.elf.load(path)
 
-        self.garbage = tuplify(garbage)
+        self.garbage = pwn.tuplify(garbage)
 
-        # bring addresses of sections, symbols, plt and got to this object
+        # bring segments, sections, symbols, plt and got to this object
+        self.segments = self.elf.segments
         self.sections = dict()
         for k, v in self.elf.sections.items():
             self.sections[k] = v['addr']
@@ -25,47 +20,68 @@ class ROP:
         self.plt = self.elf.plt
         self.got = self.elf.got
 
-        # promote to top-level
-        g = globals()
-        g['sections'] = self.sections
-        g['symbols'] = self.symbols
-        g['plt'] = self.plt
-        g['got'] = self.got
-
         self._chain = []
         self._gadgets = {}
+        self._load_addr = None
+        self._next_load_addr = None
         self._load_gadgets()
 
-        _currently_loaded = self
+    def __getattr__(self, name):
+        def func(*args):
+            self.call(name, args)
+        return func
+
+    def mprotect(self, addr):
+        self.call('mprotect', (addr & ~4095, 4096, 7))
+        self.call('mprotect', ((addr+4096) & ~4095, 4096, 7))
+
+    def bss(self, offset=0):
+        return self.sections['.bss'] + offset
+
+    def extra_libs(self, libs):
+        self.elf.extra_libs(libs)
+
+    def load_library(self, file, addr, relative_to = None):
+        import os
+        syms = {}
+
+        if not os.path.exists(file):
+            if file in self.elf.libs:
+                file = self.elf.libs[file]
+            else:
+                pwn.die('Could not load library, file %s does not exist.' % file)
+
+        for k, v in pwn.elf.symbols(file).items():
+            if '@@' in k:
+                k = k[:k.find('@@')]
+            syms[k] = v
+        offset = addr
+        if relative_to:
+            if relative_to not in syms:
+                pwn.die('Could not load library relative to "%s" -- no such symbol', relative_to)
+            offset -= syms[relative_to]['addr']
+        for k, v in syms.items():
+            self.symbols[k] = v['addr'] + offset
+
+    def add_symbol(self, symbol, addr):
+        self.symbols[symbol] = addr
+
+    def set_load_addr(self, addr):
+        self._load_addr = addr
 
     def _load_gadgets(self):
         if self.elf.elfclass == 'ELF32':
             self._load32_popret()
             self._load32_migrate()
 
-    def _exec_sections(self):
-        for name, sec in self.elf.sections.items():
-            if 'X' not in sec['flags']: continue
-            data = self.elf.section(name)
-            addr = sec['addr']
-            yield (data, addr)
-
-
-    def _non_writable_sections(self):
-        for name, sec in self.elf.sections.items():
-            if 'W' in sec['flags']: continue
-            data = self.elf.section(name)
-            addr = sec['addr']
-            yield (data, addr)
-
-
     def _load32_popret(self):
+        from collections import defaultdict
         addesp = '\x83\xc4'
         popr = map(chr, [0x58, 0x59, 0x5a, 0x5b, 0x5d, 0x5e, 0x5f])
         popa = '\x61'
         ret  = '\xc3'
         poprets = defaultdict(list)
-        for data, addr in self._exec_sections():
+        for data, addr in self.elf.executable_segments():
             i = 0
             while True:
                 i = data.find(ret, i)
@@ -80,7 +96,7 @@ class ROP:
                     if data[off - 1] == popa:
                         s.append((off - 1, size + 7))
                     if data[off - 3:off - 1] == addesp:
-                        x = u8(data[off - 1])
+                        x = pwn.u8(data[off - 1])
                         if x % 4 == 0:
                             s.append((off - 3, size + x // 4))
                 i += 1
@@ -91,10 +107,10 @@ class ROP:
         popebp = '\x5d\xc3'
         ls = []
         ps = []
-        for data, addr in self._exec_sections():
-            idxs = findall(data, leave)
+        for data, addr in self.elf.executable_segments():
+            idxs = pwn.findall(data, leave)
             ls += map(lambda i: i + addr, idxs)
-            idxs = findall(data, popebp)
+            idxs = pwn.findall(data, popebp)
             ps += map(lambda i: i + addr, idxs)
         self._gadgets['leave'] = ls
         self._gadgets['popebp'] = ps
@@ -102,10 +118,10 @@ class ROP:
     def _resolve(self, x):
         if x is None or isinstance(x, int):
             return x
-        for y in [self.plt, self.symbols, self.sections]:
+        for y in [self.symbols, self.plt, self.sections]:
             if x in y:
                 return y[x]
-        die('Could not resolve `%s\'' % x)
+        pwn.die('Could not resolve `%s\'' % x)
 
     def _pivot(self, args):
         pivot = None
@@ -115,7 +131,7 @@ class ROP:
                 pivot = rets[size][0]
                 break
         if pivot is None:
-            for i in findall(args, None):
+            for i in pwn.findall(args, None):
                 if i in rets.keys():
                     res = self._pivot(args[i + 1:])
                     if res is None: continue
@@ -128,6 +144,7 @@ class ROP:
             return (pivot, size)
 
     def migrate(self, sp, bp = None):
+        self._next_load_addr = sp
         self._chain.append(('migrate', (sp, bp)))
         return self
 
@@ -135,58 +152,76 @@ class ROP:
         if self.elf.elfclass == 'ELF32':
             self._set_frame32(addr)
         else:
-            die('Only 32bit ELF supported')
+            pwn.die('Only 32bit ELF supported')
 
     def _set_frame32(self, addr):
         gs = self._gadgets['popebp']
         if gs <> []:
             self.raw(gs[0], addr)
         else:
-            die('Could not find set-EBP gadget')
+            pwn.die('Could not find set-EBP gadget')
 
     def call(self, target, args = (), pivot = None):
         '''Irrelevant arguments should be marked by a None'''
         target = self._resolve(target)
-        args = map(self._resolve, tuplify(args))
-        self._chain.append(('call', (target, pivot, args)))
+        self._chain.append(('call', (target, pivot, pwn.tuplify(args))))
         return self
 
     def raw(self, *words):
         self._chain.append(('raw', words))
         return self
 
-    def search(self, byte):
-        for data, addr in self._non_writable_sections():
-            if addr and byte in data:
-                yield data.find(byte) + addr
-
-    def generate(self):
+    def flush(self, loaded_at = None):
+        if loaded_at is not None:
+            self._load_addr = loaded_at
         if self.elf.elfclass == 'ELF32':
             return self._generate32()
         else:
-            die('Only 32bit ELF supported')
-
-    def flush(self):
-        '''Alias for generate'''
-        return self.generate()
+            pwn.die('Only 32bit ELF supported')
 
     def _garbage(self, n):
+        import random
         out = ''
         while len(out) < n:
             x = random.choice(self.garbage)
-            out += x if isinstance(x, str) else pint(x)
+            out += x if isinstance(x, str) else pwn.pint(x)
         return out[:n]
 
     def _generate32(self):
         out = []
         chain = self._chain
         self._chain = []
-        p = p32
+        p = pwn.p32
         def garbage():
             return self._garbage(4)
+
+        payload = []
+        offset = [0]
+
         def pargs(args):
-            args = map(lambda a: garbage() if a is None else p(a), args)
-            return args
+            out = []
+            for a in args:
+                if   a is None:
+                    out.append(garbage())
+                elif isinstance(a, int):
+                    out.append(p(a))
+                elif hasattr(a, '__iter__'):
+                    packed = pargs(a)
+                    payload.extend(packed)
+                    out.append(offset[0])
+                    for a in packed:
+                        if isinstance(a, int):
+                            offset[0] += 4
+                        else:
+                            offset[0] += len(a)
+                else:
+                    if isinstance(a, str):
+                        a += '\x00'
+                    a = pwn.flat(a)
+                    payload.append(a)
+                    out.append(offset[0])
+                    offset[0] += len(a)
+            return out
 
         for i in range(len(chain)):
             type, link = chain[i]
@@ -212,7 +247,7 @@ class ROP:
                             # find suitable popret
                             res = self._pivot(args)
                             if res is None:
-                                die('Could not find gadget for pivoting %d arguments' % len(args))
+                                pwn.die('Could not find gadget for pivoting %d arguments' % len(args))
                             pivot, size = res
                             args = pargs(args)
                             for _ in range(size - len(args)):
@@ -221,37 +256,49 @@ class ROP:
                         out += args
             elif type == 'migrate':
                 if not islast:
-                    die('Migrate must be last link in chain')
+                    pwn.die('Migrate must be last link in chain')
                 esp, ebp = link
                 gp = self._gadgets['popebp']
                 gl = self._gadgets['leave']
                 if len(gp) == 0 and len(gl) == 0:
-                    die('Could not find set-EBP and leave gadgets needed to migrate')
+                    pwn.die('Could not find set-EBP and leave gadgets needed to migrate')
                 gp = gp[0]
                 gl = gl[0]
                 if ebp is None:
                     out += [p(gp), p(esp-4), p(gl)]
                 else:
                     out += [p(gp), p(esp), p(gl)]
-                    self.raw(p(ebp))
+                    self.raw(ebp)
             else:
-                die('Unknown ROP-link type')
+                pwn.die('Unknown ROP-link type')
+        offset = len(out) * 4
+        out_ = out + payload
+        out = []
+        for o in out_:
+            if isinstance(o, int):
+                if self._load_addr is None:
+                    pwn.die('Load address of ROP chain not known; can\'t use structures')
+                out.append(p(offset + o + self._load_addr))
+            else:
+                out.append(o)
+        self._load_addr = self._next_load_addr
+        self._next_load_addr = None
         return ''.join(out)
 
     def __str__(self):
-        return self.generate()
+        return self.flush()
 
     def __flat__(self):
-        return self.generate()
+        return self.flush()
 
     def __repr__(self):
         return str(self)
 
-    def __add__(x, y):
-        return str(x) + str(y)
+    def __add__(self, other):
+        return str(self) + str(other)
 
-    def __radd__(x, y):
-        return str(y) + str(x)
+    def __radd__(self, other):
+        return str(other) + str(self)
 
     def __getitem__(self, x):
         return self._resolve(x)
@@ -259,39 +306,7 @@ class ROP:
     def chain(self, *args):
         if len(args) % 2 <> 0:
             args = args + ((),)
-        args = group(2, args)
+        args = pwn.group(2, args)
         for f, a in args:
             self.call(f, a)
         return self
-
-# alias
-class load(ROP): pass
-
-def _ensure_loaded():
-    if _currently_loaded is None:
-        die('No file loaded for ROP\'ing')
-
-def call(*args):
-    _ensure_loaded()
-    return _currently_loaded.call(*args)
-
-def raw(*args):
-    _ensure_loaded()
-    return _currently_loaded.raw(*args)
-
-def migrate(*args):
-    _ensure_loaded()
-    return _currently_loaded.migrate(*args)
-
-def generate():
-    _ensure_loaded()
-    return _currently_loaded.generate()
-
-def chain(*args):
-    _ensure_loaded()
-    return _currently_loaded.chain(*args)
-
-def flush():
-    '''Alias for generate'''
-    _ensure_loaded()
-    return _currently_loaded.flush()
