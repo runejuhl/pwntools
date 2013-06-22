@@ -1,4 +1,5 @@
-import string, pwn, math
+from pwn import die
+import string, math
 
 class DeBruijn:
     def __init__(self, alphabet = string.lowercase, n = 4, size = -1):
@@ -21,7 +22,8 @@ class DeBruijn:
 
     # Taken from http://en.wikipedia.org/wiki/De_Bruijn_sequence but changed to a generator
     def _generator(self):
-        """Generator for a De Bruijn Sequence for the given alphabet and subsequences of length n.
+        """Generator for a De Bruijn Sequence for the given alphabet
+        and subsequences of length n.
 
         The yielded result contains len(alphabet)**n elements"""
         k = len(self.alphabet)
@@ -44,7 +46,11 @@ class DeBruijn:
         return db(1,1)
 
     def sequence(self, join = True):
-        """Returns the first length elements in the a De Bruijn Sequence for the given alphabet and subsequences of length n. If length is negative, then return the entire sequence. If join is True, then the sequence is joined into a string, otherwise a generator is returned."""
+        """Returns the first length elements in the a De Bruijn
+        Sequence for the given alphabet and subsequences of length
+        n. If length is negative, then return the entire sequence. If
+        join is True, then the sequence is joined into a string,
+        otherwise a generator is returned."""
         if self.size < 0:
             helper = lambda size: self._generator()
         else:
@@ -60,17 +66,20 @@ class DeBruijn:
         return list(helper(self.size))
 
     def find(self, subseq):
-        """Returns the index for the subsequence of a De Bruijn Sequence for the given alphabet and subsequences of length n. If not specified, n will default to len(subseq).
+        """Returns the index for the subsequence of a De Bruijn
+        Sequence for the given alphabet and subsequences of length
+        n. If not specified, n will default to len(subseq).
 
-        There exists better algorithms for this, but they depend on generating the De Bruijn sequence in another fashion. Somebody should look at it:
+        There exists better algorithms for this, but they depend on
+        generating the De Bruijn sequence in another fashion. Somebody
+        should look at it:
         http://www.sciencedirect.com/science/article/pii/S0012365X00001175
         """
-        if isinstance(subseq, int):
-            subseq = pwn.pint(subseq)
         return self.gen_find(subseq, self._generator())
 
     def gen_find(self, subseq, generator):
-        """Returns the first position of subseq in the generator or -1 if there is no such position."""
+        """Returns the first position of subseq in the generator or -1
+        if there is no such position."""
         subseq = list(subseq)
         pos = 0
         saved = []
