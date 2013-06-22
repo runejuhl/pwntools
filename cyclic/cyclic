@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-import pwn, sys, argparse, string
+from pwn import log, die, binutils
+import sys, argparse, string
 from pwn import DeBruijn
 
 if __name__ == "__main__":
@@ -44,7 +45,7 @@ if __name__ == "__main__":
 
     if args.no_alphabet:
         if args.offset:
-            pwn.die('Invalid combination of arguments.')
+            die('Invalid combination of arguments.')
         args.alphabet = None
 
     if args.offset:
@@ -53,30 +54,33 @@ if __name__ == "__main__":
         db = DeBruijn(args.alphabet, args.length, int(args.patsize))
 
     if args.print_alphabet:
-        pwn.log.info('Alphabet used: %s' % db.alphabet)
+        log.info('Alphabet used: %s' % db.alphabet)
     elif args.offset:
         pat = args.patsize
 
-        if args.alphabet and [x for x in pat if x not in args.alphabet]:
-            pwn.die('Pattern contains characters outside selected alphabet. '
-                    'Current alphabet is "%s".' % db.alphabet)
-
         if pat.startswith('0x'):
-            pat = pwn.p32(int(pat[2:], 16) & 0xffffffff)
+            pat = binutils.p32(int(pat[2:], 16) & 0xffffffff)
         elif pat.startswith('0d'):
-            pat = pwn.p32(int(pat, 10) & 0xffffffff)
+            pat = binutils.p32(int(pat[2:], 10) & 0xffffffff)
         else:
             pat = pat[:args.length]
+        
+        if isinstance(pat, int):
+            pat = binutils.pint(pat)
+
+        if args.alphabet and [x for x in pat if x not in args.alphabet]:
+            die('Pattern contains characters outside selected alphabet. '
+                    'Current alphabet is "%s".' % db.alphabet)
 
         if len(pat) < args.length:
-            pwn.die('Subpattern must be %i bytes' % args.length)
+            die('Subpattern must be %i bytes' % args.length)
 
-        pwn.log.waitfor('Looking for pattern "%s"' % pat)
+        log.waitfor('Looking for pattern "%s"' % pat)
         offset = db.find(pat)
         if offset == -1:
-            pwn.log.failed('given pattern does not exist in cyclic pattern')
+            log.failed('given pattern does not exist in cyclic pattern')
         else:
-            pwn.log.succeeded('found at ' + str(offset))
+            log.succeeded('found at ' + str(offset))
     else:
         print db.sequence(int(args.patsize))
     
